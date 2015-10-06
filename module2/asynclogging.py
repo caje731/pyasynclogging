@@ -7,11 +7,18 @@
 """
 
 from threading import Thread
-import json, sys, logging, logging.handlers, Queue, urllib, urllib2
+import json, os, sys, logging, logging.handlers, Queue, urllib, urllib2, time
 import socket, traceback
+
+# The worker threads for this module depend on this flag to live or die
+ACTIVE_FLAG = 'ASYNCLOG_ACTIVE'
+os.environ[ACTIVE_FLAG] = "True"
 
 # The FIFO Queue instance which stores log requests for later processing
 logging_queue = Queue.Queue()
+
+# How long should the workers block on the queue
+WAIT_TIME_SEC = 2
 
 # The number of worker threads that work on queued logging requests
 # CAUTION: Creating more than 1 consumer thread will cause messages to be
@@ -193,14 +200,33 @@ class QueueLogger(object):
 
 def log_item():
     """ Access items from queue, and log them. """
-    while True:
+    while os.environ[ACTIVE_FLAG] == "True":
         # Block until something is available in queue, and remove it from queue
-        logger, severity, msg, args, kwargs = logging_queue.get(True)
-        logger.log(severity, msg, *args, **kwargs)
+        # The timeout value helps to break the wait-state after some time
+        # and then always check the loop flag before continuing this worker
+        try:
+            logger, severity, msg, args, kwargs = logging_queue.get(True, WAIT_TIME_SEC)
+            logger.log(severity, msg, *args, **kwargs)
+        except Queue.Empty:
+            continue
 
+def stop_workers():
+    """ Unset the _active flag so that workers may stop """
+    os.environ[ACTIVE_FLAG] = "False"
 
-# Start logging anything that's put on the queue
-for i in range(NUM_CONSUMER_THREADS):
-    t = Thread(target=log_item)
-    t.daemon = False
-    t.start()
+def start_workers():
+    """ Start logging anything that's put on the queue """
+    
+    os.environ[ACTIVE_FLAG] = "True"
+    for i in range(NUM_CONSUMER_THREADS):
+        t = Thread(target=log_item)
+        t.daemon = False
+        t.start()
+
+def restart_workers():
+    """ Stop existing workers, if any, and spawn new workers """
+    stop_workers()
+    time.sleep(WAIT_TIME_SEC + 0.5)
+    start_workers()
+
+start_workers()
